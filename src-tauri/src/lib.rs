@@ -12,6 +12,8 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+mod codex_sessions;
+
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const BLINK_INTERVAL: Duration = Duration::from_millis(500);
 const SESSION_STALE_SECS: u64 = 300;
