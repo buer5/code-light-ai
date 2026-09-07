@@ -12,13 +12,14 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+mod codex_sessions;
+
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const BLINK_INTERVAL: Duration = Duration::from_millis(500);
 const SESSION_STALE_SECS: u64 = 300;
 const WAITING_TIMEOUT_SECS: u64 = 30;
 const WORKING_STALE_SECS: u64 = 60;
 const COMPLETED_DISPLAY_SECS: u64 = 10;
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 enum State {
@@ -57,6 +58,42 @@ struct SessionData {
     #[allow(dead_code)]
     message: Option<String>,
     timestamp: Option<u64>,
+    session_id: Option<String>,
+    agent: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionSnapshot {
+    session_id: String,
+    agent: String,
+    state: State,
+    message: String,
+    timestamp: u64,
+    modified_at: u64,
+}
+
+fn merge_scanned_codex_sessions(
+    mut hook_sessions: Vec<SessionSnapshot>,
+    scanned_sessions: Vec<codex_sessions::CodexSession>,
+) -> Vec<SessionSnapshot> {
+    for scanned in scanned_sessions {
+        hook_sessions.retain(|session| {
+            !(session.agent == "codex" && session.session_id == scanned.session_id)
+        });
+        hook_sessions.push(SessionSnapshot {
+            session_id: scanned.session_id,
+            agent: "codex".to_string(),
+            state: match scanned.state {
+                codex_sessions::SessionState::Idle => State::Idle,
+                codex_sessions::SessionState::Working => State::Working,
+                codex_sessions::SessionState::Completed => State::Completed,
+            },
+            message: scanned.message,
+            timestamp: scanned.timestamp,
+            modified_at: scanned.timestamp,
+        });
+    }
+    hook_sessions
 }
 
 struct AppState {
@@ -112,68 +149,77 @@ fn read_all_sessions() -> (State, String, u64, usize) {
     let now = now_secs();
     let dir = sessions_dir();
     let _ = fs::create_dir_all(&dir);
+    let mut hook_sessions = Vec::new();
 
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return (State::Idle, String::new(), 0, 0);
-    };
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
 
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            let mtime = modified
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            if now.saturating_sub(mtime) > SESSION_STALE_SECS {
+                continue;
+            }
+
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(data) = serde_json::from_str::<SessionData>(&content) else {
+                continue;
+            };
+
+            let fallback_id = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown");
+            hook_sessions.push(SessionSnapshot {
+                session_id: data.session_id.unwrap_or_else(|| fallback_id.to_string()),
+                agent: data.agent.unwrap_or_else(|| "unknown".to_string()),
+                state: State::from_str(&data.state),
+                message: data.message.unwrap_or_default(),
+                timestamp: data.timestamp.unwrap_or(mtime),
+                modified_at: mtime,
+            });
+        }
+    }
+
+    let codex_root = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".codex")
+        .join("sessions");
+    let sessions = merge_scanned_codex_sessions(
+        hook_sessions,
+        codex_sessions::scan_codex_sessions(&codex_root),
+    );
     let mut best_state = State::Idle;
     let mut best_message = String::new();
-    let mut best_ts: u64 = 0;
-    let mut active_count: usize = 0;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-
-        let Ok(metadata) = fs::metadata(&path) else {
-            continue;
-        };
-        let Ok(modified) = metadata.modified() else {
-            continue;
-        };
-        let mtime = modified
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        if now.saturating_sub(mtime) > SESSION_STALE_SECS {
-            let _ = fs::remove_file(&path);
-            continue;
-        }
-
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(data) = serde_json::from_str::<SessionData>(&content) else {
-            continue;
-        };
-
-        let mut state = State::from_str(&data.state);
-
-        if state == State::Waiting && now.saturating_sub(mtime) > WAITING_TIMEOUT_SECS {
+    let mut best_ts = 0;
+    let active_count = sessions.len();
+    for session in sessions {
+        let mut state = session.state;
+        if state == State::Waiting && now.saturating_sub(session.modified_at) > WAITING_TIMEOUT_SECS
+        {
             state = State::Working;
         }
-
-        if state == State::Working && now.saturating_sub(mtime) > WORKING_STALE_SECS {
+        if state == State::Working && now.saturating_sub(session.modified_at) > WORKING_STALE_SECS {
             state = State::Completed;
-            if let Ok(mut f) = fs::File::create(&path) {
-                let updated = serde_json::json!({
-                    "state": "completed",
-                    "message": "Auto-completed (stop hook missing)",
-                    "timestamp": now
-                });
-                let _ = serde_json::to_writer(&mut f, &updated);
-            }
         }
-
-        active_count += 1;
         if state > best_state {
             best_state = state;
-            best_message = data.message.unwrap_or_default();
-            best_ts = data.timestamp.unwrap_or(0);
+            best_message = session.message;
+            best_ts = session.timestamp;
         }
     }
 
@@ -354,9 +400,7 @@ fn setup_hooks() {
 }
 
 fn setup_codex_hooks() {
-    let codex_dir = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".codex");
+    let codex_dir = dirs::home_dir().unwrap_or_default().join(".codex");
 
     let hooks_json_path = codex_dir.join("hooks.json");
 
@@ -408,8 +452,7 @@ fn make_window_transparent(window: &tauri::WebviewWindow) {
     if let Ok(ptr) = window.ns_window() {
         unsafe {
             let ns_window = ptr as *mut Object;
-            let clear: *mut Object =
-                msg_send![Class::get("NSColor").unwrap(), clearColor];
+            let clear: *mut Object = msg_send![Class::get("NSColor").unwrap(), clearColor];
             let _: () = msg_send![ns_window, setOpaque: NO];
             let _: () = msg_send![ns_window, setBackgroundColor: clear];
         }
@@ -450,8 +493,10 @@ pub fn run() {
 
             let toggle_pet_item = MenuItemBuilder::with_id("toggle_pet", "Hide Pet").build(app)?;
             let whip_item = MenuItemBuilder::with_id("whip", "Whip  \u{2318}B").build(app)?;
-            let setup_claude_item = MenuItemBuilder::with_id("setup_claude", "Setup Claude Hooks").build(app)?;
-            let setup_codex_item = MenuItemBuilder::with_id("setup_codex", "Setup Codex Hooks").build(app)?;
+            let setup_claude_item =
+                MenuItemBuilder::with_id("setup_claude", "Setup Claude Hooks").build(app)?;
+            let setup_codex_item =
+                MenuItemBuilder::with_id("setup_codex", "Setup Codex Hooks").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Code Light").build(app)?;
             let menu = MenuBuilder::new(app)
                 .item(&toggle_pet_item)
@@ -519,63 +564,62 @@ pub fn run() {
 
             // Register global shortcut: Cmd+B (macOS) / Ctrl+B (others) → whip
             let shortcut_app = app.handle().clone();
-            app.global_shortcut().on_shortcut("CmdOrCtrl+B", move |_app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    let _ = shortcut_app.emit("whip", ());
-                }
-            }).ok();
+            app.global_shortcut()
+                .on_shortcut("CmdOrCtrl+B", move |_app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        let _ = shortcut_app.emit("whip", ());
+                    }
+                })
+                .ok();
 
             // Poll thread
             let poll_app = app.handle().clone();
             let poll_state = app_state.clone();
-            std::thread::spawn(move || {
-                loop {
-                    std::thread::sleep(POLL_INTERVAL);
-                    let (state, message, ts, count) = read_all_sessions();
-                    let mut s = poll_state.lock().unwrap();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(POLL_INTERVAL);
+                let (state, message, ts, count) = read_all_sessions();
+                let mut s = poll_state.lock().unwrap();
 
-                    if s.state == State::Completed {
-                        if let Some(since) = s.completed_since {
-                            if now_secs() - since > COMPLETED_DISPLAY_SECS {
-                                s.state = State::Idle;
-                                s.completed_since = None;
-                                drop(s);
-                                cleanup_completed_sessions();
-                                s = poll_state.lock().unwrap();
-                            }
+                if s.state == State::Completed {
+                    if let Some(since) = s.completed_since {
+                        if now_secs() - since > COMPLETED_DISPLAY_SECS {
+                            s.state = State::Idle;
+                            s.completed_since = None;
+                            drop(s);
+                            cleanup_completed_sessions();
+                            s = poll_state.lock().unwrap();
                         }
                     }
+                }
 
-                    if state != s.state {
-                        s.state = state;
-                        s.message = message;
-                        s.timestamp = ts;
-                        s.active_count = count;
-                        s.blink_on = true;
-                        s.completed_since = if state == State::Completed {
-                            Some(now_secs())
-                        } else {
-                            None
-                        };
+                if state != s.state {
+                    s.state = state;
+                    s.message = message;
+                    s.timestamp = ts;
+                    s.active_count = count;
+                    s.blink_on = true;
+                    s.completed_since = if state == State::Completed {
+                        Some(now_secs())
+                    } else {
+                        None
+                    };
 
-                        let payload = serde_json::json!({
-                            "state": s.state.key(),
-                            "message": s.message,
-                            "timestamp": s.timestamp,
-                            "activeCount": s.active_count,
-                        });
-                        let _ = poll_app.emit("state-changed", payload);
-                    } else if ts != s.timestamp || count != s.active_count {
-                        s.message = message;
-                        s.timestamp = ts;
-                        s.active_count = count;
-                    }
+                    let payload = serde_json::json!({
+                        "state": s.state.key(),
+                        "message": s.message,
+                        "timestamp": s.timestamp,
+                        "activeCount": s.active_count,
+                    });
+                    let _ = poll_app.emit("state-changed", payload);
+                } else if ts != s.timestamp || count != s.active_count {
+                    s.message = message;
+                    s.timestamp = ts;
+                    s.active_count = count;
+                }
 
-                    let text =
-                        build_status_text(s.state, &s.message, s.timestamp, s.active_count);
-                    if let Some(tray) = poll_app.tray_by_id("main") {
-                        let _ = tray.set_tooltip(Some(&text));
-                    }
+                let text = build_status_text(s.state, &s.message, s.timestamp, s.active_count);
+                if let Some(tray) = poll_app.tray_by_id("main") {
+                    let _ = tray.set_tooltip(Some(&text));
                 }
             });
 
@@ -609,4 +653,45 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_scanned_codex_sessions, SessionSnapshot, State};
+    use crate::codex_sessions::{CodexSession, SessionState};
+
+    fn hook_session(id: &str, agent: &str, state: State) -> SessionSnapshot {
+        SessionSnapshot {
+            session_id: id.to_string(),
+            agent: agent.to_string(),
+            state,
+            message: String::new(),
+            timestamp: 1,
+            modified_at: 1,
+        }
+    }
+
+    #[test]
+    fn merge_scanned_codex_replaces_matching_hook_session_and_keeps_claude() {
+        let merged = merge_scanned_codex_sessions(
+            vec![
+                hook_session("codex-1", "codex", State::Completed),
+                hook_session("claude-1", "claude", State::Waiting),
+            ],
+            vec![CodexSession {
+                session_id: "codex-1".to_string(),
+                state: SessionState::Working,
+                message: "Task working".to_string(),
+                timestamp: 2,
+            }],
+        );
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged
+            .iter()
+            .any(|session| { session.session_id == "codex-1" && session.state == State::Working }));
+        assert!(merged.iter().any(|session| {
+            session.session_id == "claude-1" && session.state == State::Waiting
+        }));
+    }
 }

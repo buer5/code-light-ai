@@ -51,7 +51,9 @@ Code Light uses a file-based polling mechanism:
 3. The tray app polls these files every second and updates the icon
 
 ```
-Agent event → Hook script → ~/.code-light/sessions/*.json → Tray icon
+Codex session log → Code Light scanner → Tray icon
+
+Claude Code continues to use lifecycle hooks. Codex status is read primarily from recent `~/.codex/sessions` logs, with installed hooks retained as a compatibility fallback.
 ```
 
 Zero network ports, zero APIs, zero configuration — just files on disk.
