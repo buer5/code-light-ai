@@ -50,7 +50,11 @@ mod tests {
         let sessions = TempSessions::new();
         sessions.write(
             "nested/session.jsonl",
-            &format!("{}\n{}\n", meta("active-session"), event("task_started", "turn-1")),
+            &format!(
+                "{}\n{}\n",
+                meta("active-session"),
+                event("task_started", "turn-1")
+            ),
         );
 
         let found = scan_codex_sessions_at(&sessions.root, SystemTime::now());
@@ -86,9 +90,15 @@ mod tests {
         let found = scan_codex_sessions_at(&sessions.root, SystemTime::now());
 
         assert_eq!(found.len(), 2);
-        assert!(found.iter().all(|session| session.state == SessionState::Completed));
-        assert!(found.iter().any(|session| session.message == "Task completed"));
-        assert!(found.iter().any(|session| session.message == "Turn aborted"));
+        assert!(found
+            .iter()
+            .all(|session| session.state == SessionState::Completed));
+        assert!(found
+            .iter()
+            .any(|session| session.message == "Task completed"));
+        assert!(found
+            .iter()
+            .any(|session| session.message == "Turn aborted"));
     }
 
     #[test]
@@ -97,12 +107,34 @@ mod tests {
         sessions.write("bad.jsonl", "not json\n");
         let stale = sessions.write(
             "stale.jsonl",
-            &format!("{}\n{}\n", meta("stale-session"), event("task_started", "turn-1")),
+            &format!(
+                "{}\n{}\n",
+                meta("stale-session"),
+                event("task_started", "turn-1")
+            ),
         );
         let modified = fs::metadata(stale).unwrap().modified().unwrap();
         let found = scan_codex_sessions_at(&sessions.root, modified + Duration::from_secs(301));
 
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn ignores_a_malformed_line_in_an_otherwise_valid_log() {
+        let sessions = TempSessions::new();
+        sessions.write(
+            "partially-valid.jsonl",
+            &format!(
+                "{}\nnot json\n{}\n",
+                meta("partially-valid-session"),
+                event("task_started", "turn-1")
+            ),
+        );
+
+        let found = scan_codex_sessions_at(&sessions.root, SystemTime::now());
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].state, SessionState::Working);
     }
 }
 
@@ -164,7 +196,10 @@ fn collect_jsonl_files(root: &Path, logs: &mut Vec<(PathBuf, u64)>) {
             collect_jsonl_files(&path, logs);
         } else if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
             if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
-                let timestamp = modified.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                let timestamp = modified
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
                 logs.push((path, timestamp));
             }
         }
@@ -178,7 +213,9 @@ fn read_session_log(path: &Path, timestamp: u64) -> Option<CodexSession> {
     let mut last_terminal = None;
 
     for line in contents.lines().filter(|line| !line.trim().is_empty()) {
-        let value: serde_json::Value = serde_json::from_str(line).ok()?;
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         let event_type = value.get("type").and_then(serde_json::Value::as_str)?;
         let payload = value.get("payload");
 
