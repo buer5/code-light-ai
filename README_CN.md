@@ -51,7 +51,9 @@ Code Light 使用基于文件的轮询机制：
 3. 托盘应用每秒轮询这些文件，并更新图标
 
 ```
-Agent 事件 → 钩子脚本 → ~/.code-light/sessions/*.json → 托盘图标
+Codex 会话日志 → Code Light 扫描器 → 托盘图标
+
+Claude Code 仍通过生命周期钩子获取状态。Codex 优先扫描最近的 `~/.codex/sessions` 日志，已安装的钩子保留为兼容性兜底。
 ```
 
 零网络端口、零 API、零配置 —— 只依赖磁盘文件。
