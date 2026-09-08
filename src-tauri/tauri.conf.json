@@ -14,17 +14,13 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "label": "pet",
+        "label": "background",
         "url": "index.html",
-        "transparent": true,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "acceptFirstMouse": true,
+        "visible": false,
         "skipTaskbar": true,
-        "width": 128,
-        "height": 128,
-        "resizable": false,
-        "visibleOnAllWorkspaces": true
+        "decorations": false,
+        "width": 1,
+        "height": 1
       }
     ],
     "security": {

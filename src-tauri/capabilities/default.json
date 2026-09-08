@@ -1,13 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the pet window",
-  "windows": ["pet"],
+  "description": "Capability for the tray application",
+  "windows": ["background"],
   "permissions": [
     "core:default",
-    "core:window:allow-start-dragging",
-    "core:window:allow-set-position",
-    "core:window:allow-outer-position",
-    "opener:default"
+    "opener:default",
+    "autostart:default"
   ]
 }

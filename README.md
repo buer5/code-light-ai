@@ -3,14 +3,14 @@
 
   # Code Light AI
 
-  A system tray status light for AI coding agents, with a desktop pet companion.
+  A tray-only status light for AI coding agents.
 
   [中文文档](./README_CN.md)
 
   <img src="./preview.gif" alt="Preview" width="480" />
 </div>
 
-It shows a colored indicator in your system tray so you can tell at a glance what your AI agent is doing — without keeping the terminal visible. Plus, an adorable pixel cat pet that reacts to your agent's status!
+It shows a colored indicator in your system tray so you can tell at a glance what your AI agent is doing — without keeping the terminal visible or showing a desktop pet.
 
 Currently supports **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** and **[OpenAI Codex CLI](https://github.com/openai/codex)**.
 
@@ -26,34 +26,20 @@ Currently supports **[Claude Code](https://docs.anthropic.com/en/docs/claude-cod
 
 Active states blink every 500ms to catch your attention. The tray tooltip shows the current state, active session count, and last update time.
 
-## Desktop Pet 🐱
-
-Code Light now includes a pixel art desktop pet that reacts to your AI agent's status! The cat companion sits on your desktop and animates based on what your agent is doing.
-
-| State | Animation |
-|:---:|---|
-| Idle | Relaxed, sitting calmly |
-| Working | Energetic, typing away |
-| Waiting | Alert, looking around |
-| Error | Startled, ears back |
-| Completed | Happy, celebrating |
-
-**Toggle the pet:** Right-click the tray icon and select **"Show Pet"** or **"Hide Pet"** to control visibility.
-
-The pet window is always on top and draggable, so you can position it anywhere on your screen.
-
 ## How It Works
 
 Code Light uses a file-based polling mechanism:
 
-1. **Shell hooks** are registered as lifecycle hooks for Claude Code (`~/.claude/settings.json`) and Codex (`~/.codex/hooks.json`)
-2. Each hook writes a JSON state file to `~/.code-light/sessions/<session-id>.json`
-3. The tray app polls these files every second and updates the icon
+1. Claude Code uses lifecycle shell hooks from `~/.claude/settings.json`
+2. Codex uses a native Code Light bridge registered in `~/.codex/hooks.json`; existing third-party hooks are preserved
+3. Hook events write JSON state files to `~/.code-light/sessions/<session-id>.json`
+4. Recent Codex session logs provide an additional compatibility fallback
+5. The tray app polls these sources every second and updates the icon
 
 ```
 Codex session log → Code Light scanner → Tray icon
 
-Claude Code continues to use lifecycle hooks. Codex status is read primarily from recent `~/.codex/sessions` logs, with installed hooks retained as a compatibility fallback.
+Codex native hook → Code Light bridge ─┘
 ```
 
 Zero network ports, zero APIs, zero configuration — just files on disk.
@@ -88,10 +74,11 @@ Built artifacts:
 ## Usage
 
 1. **Launch** Code Light — a gray dot appears in your system tray
-2. **Right-click** the icon and select **"Setup Claude Hooks"** to register hooks for Claude Code, or **"Setup Codex Hooks"** for Codex CLI
-3. **Start your AI agent** in the terminal — the tray icon changes color as the agent works
+2. Codex hooks and OS autostart are configured automatically; use **"Setup Codex Hooks"** to retry if needed
+3. **Right-click** the icon and select **"Setup Claude Hooks"** when Claude Code tracking is required
+4. **Start your AI agent** in the terminal — the tray icon changes color as the agent works
 
-That's it. On macOS the app runs as a pure menu bar accessory with no dock icon.
+That's it. The application runs in tray-only mode with no desktop pet window.
 
 > **Note for Codex users:** After setting up Codex hooks, run `/hooks` in the Codex CLI and press `t` to trust all hooks before they can take effect.
 
@@ -112,7 +99,7 @@ If you run multiple sessions (Claude Code and/or Codex) in different terminals, 
 ### Automatic cleanup
 
 - Sessions with no activity for 5 minutes are automatically removed
-- Sessions stuck in "waiting" for 30+ seconds are promoted to "working"
+- Waiting sessions remain yellow until a later hook event changes their state or the session becomes stale
 - Sessions stuck in "working" for 60+ seconds are auto-completed
 - Completed sessions are cleaned up after the 10-second display window
 
@@ -144,7 +131,7 @@ code-light/
 │   │   ├── post-tool-use-failure.sh # → error
 │   │   ├── notification.sh          # → waiting (on permission prompts)
 │   │   └── stop.sh                  # → completed
-│   └── codex/                       # Codex CLI hook scripts
+│   └── codex/                       # Legacy Codex hook scripts (native bridge is preferred)
 │       ├── _helpers.sh              # Shared helpers (session ID from stdin JSON)
 │       ├── session_start.sh         # → working
 │       ├── pre_tool_use.sh          # → working
@@ -152,7 +139,7 @@ code-light/
 │       ├── post_tool_use.sh         # → working
 │       ├── user_prompt_submit.sh    # → working
 │       └── stop.sh                  # → completed
-├── public/pet/                      # Desktop pet sprite sheets
+├── public/pet/                      # Legacy sprite assets (not shown in tray-only mode)
 │   ├── idle.png                     # Idle animation
 │   ├── working.png                  # Working animation
 │   ├── waiting.png                  # Waiting animation
@@ -161,7 +148,7 @@ code-light/
 ├── src-tauri/                       # Tauri v2 / Rust backend
 │   ├── src/
 │   │   ├── main.rs                  # Entry point
-│   │   └── lib.rs                   # Tray icon, polling, blink, hook setup, pet window
+│   │   └── lib.rs                   # Tray icon, polling, blink, and hook setup
 │   ├── icons/status/                # Status indicator PNGs (gray, green, yellow, red, blue)
 │   └── tauri.conf.json              # Tauri configuration
 ├── src/                             # Frontend (vestigial — no visible window)
@@ -186,8 +173,7 @@ code-light/
 
 - **Backend:** [Tauri v2](https://v2.tauri.app/) + Rust
 - **Frontend:** Vite + TypeScript (minimal — the app has no visible window)
-- **Hooks:** Bash scripts registered as lifecycle hooks
-- **Desktop Pet:** Pixel art sprite sheets generated with Node.js canvas
+- **Hooks:** Claude shell hooks plus a native Codex hook bridge
 
 ## License
 

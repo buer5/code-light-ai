@@ -2,5 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if code_light_lib::run_codex_hook_bridge() {
+        return;
+    }
     code_light_lib::run()
 }

@@ -3,14 +3,14 @@
 
   # Code Light AI
 
-  AI 编程助手的系统托盘状态指示灯，附带桌面宠物伴侣
+  AI 编程助手的纯托盘状态指示灯
 
   [English](./README.md)
 
   <img src="./preview.gif" alt="Preview" width="480" />
 </div>
 
-让你一眼就能看到 AI 编程助手正在做什么 —— 不需要一直盯着终端窗口。还有一只可爱的像素猫咪宠物，会根据 Agent 的状态做出反应！
+让你一眼就能看到 AI 编程助手正在做什么 —— 不需要一直盯着终端窗口，也不会显示桌面宠物。
 
 目前支持 **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** 和 **[OpenAI Codex CLI](https://github.com/openai/codex)**。
 
@@ -26,34 +26,20 @@
 
 活跃状态（工作 / 等待 / 出错）每 500ms 闪烁一次，提醒你注意。托盘图标的提示文字会显示当前状态、活跃会话数和最后更新时间。
 
-## 桌面宠物 🐱
-
-Code Light 现在附带一只像素艺术风格的桌面宠物，会根据 AI Agent 的状态做出反应！这只猫咪伴侣会坐在你的桌面上，根据 Agent 的工作状态播放不同动画。
-
-| 状态 | 动画 |
-|:---:|---|
-| 空闲 | 放松地坐着 |
-| 工作中 | 精力充沛地打字 |
-| 等待确认 | 警觉地四处张望 |
-| 出错 | 受惊，耳朵向后 |
-| 已完成 | 开心地庆祝 |
-
-**切换宠物显示：** 右键点击托盘图标，选择 **"Show Pet"**（显示宠物）或 **"Hide Pet"**（隐藏宠物）来控制宠物的可见性。
-
-宠物窗口始终置顶且可拖拽，你可以将它放在屏幕上的任何位置。
-
 ## 工作原理
 
 Code Light 使用基于文件的轮询机制：
 
-1. **Shell 脚本**作为生命周期钩子注册到 Claude Code（`~/.claude/settings.json`）和 Codex（`~/.codex/hooks.json`）
-2. 每个钩子将 JSON 状态文件写入 `~/.code-light/sessions/<会话ID>.json`
-3. 托盘应用每秒轮询这些文件，并更新图标
+1. Claude Code 使用 `~/.claude/settings.json` 中的 Shell 生命周期钩子
+2. Codex 使用注册到 `~/.codex/hooks.json` 的 Code Light 原生桥接，并保留已有第三方钩子
+3. 钩子事件将 JSON 状态写入 `~/.code-light/sessions/<会话ID>.json`
+4. 最近的 Codex 会话日志作为额外兼容兜底
+5. 托盘应用每秒轮询这些来源并更新图标
 
 ```
 Codex 会话日志 → Code Light 扫描器 → 托盘图标
 
-Claude Code 仍通过生命周期钩子获取状态。Codex 优先扫描最近的 `~/.codex/sessions` 日志，已安装的钩子保留为兼容性兜底。
+Codex 原生钩子 → Code Light 桥接 ─┘
 ```
 
 零网络端口、零 API、零配置 —— 只依赖磁盘文件。
@@ -88,10 +74,11 @@ pnpm tauri build
 ## 使用方法
 
 1. **启动** Code Light —— 系统托盘会出现一个灰色圆点
-2. **右键点击**图标，选择 **"Setup Claude Hooks"** 注册 Claude Code 钩子，或选择 **"Setup Codex Hooks"** 注册 Codex 钩子
-3. **在终端启动你的 AI Agent** —— 托盘图标会随着 Agent 的工作自动变色
+2. Codex 钩子和系统自启动会自动配置；需要重试时可选择 **"Setup Codex Hooks"**
+3. 需要追踪 Claude Code 时，右键选择 **"Setup Claude Hooks"**
+4. **在终端启动你的 AI Agent** —— 托盘图标会随着 Agent 的工作自动变色
 
-就这么简单。在 macOS 上应用以纯菜单栏方式运行，不会出现在 Dock 栏。
+就这么简单。应用仅以托盘模式运行，不显示桌面宠物窗口。
 
 > **Codex 用户注意：** 设置 Codex Hooks 后，需要在 Codex CLI 中运行 `/hooks` 命令，然后按 `t` 信任所有钩子，钩子才会生效。
 
@@ -112,7 +99,7 @@ xattr -cr /path/to/Code\ Light.app
 ### 自动清理
 
 - 5 分钟内无活动的会话自动移除
-- "等待"状态超过 30 秒自动提升为"工作"
+- “等待”状态会保持黄色，直到后续钩子事件改变状态或会话过期
 - "工作"状态超过 60 秒自动标记为"完成"
 - "完成"状态在 10 秒显示窗口后自动清理
 
@@ -144,7 +131,7 @@ code-light/
 │   │   ├── post-tool-use-failure.sh # → 出错
 │   │   ├── notification.sh          # → 等待确认（权限提示时）
 │   │   └── stop.sh                  # → 已完成
-│   └── codex/                       # Codex CLI 钩子脚本
+│   └── codex/                       # 旧版 Codex 钩子脚本（优先使用原生桥接）
 │       ├── _helpers.sh              # 公共函数（从 stdin JSON 提取会话 ID）
 │       ├── session_start.sh         # → 工作中
 │       ├── pre_tool_use.sh          # → 工作中
@@ -152,7 +139,7 @@ code-light/
 │       ├── post_tool_use.sh         # → 工作中
 │       ├── user_prompt_submit.sh    # → 工作中
 │       └── stop.sh                  # → 已完成
-├── public/pet/                      # 桌面宠物精灵图
+├── public/pet/                      # 旧版精灵图资源（纯托盘模式不显示）
 │   ├── idle.png                     # 空闲动画
 │   ├── working.png                  # 工作中动画
 │   ├── waiting.png                  # 等待确认动画
@@ -161,7 +148,7 @@ code-light/
 ├── src-tauri/                       # Tauri v2 / Rust 后端
 │   ├── src/
 │   │   ├── main.rs                  # 入口
-│   │   └── lib.rs                   # 托盘图标、轮询、闪烁、钩子注册、宠物窗口
+│   │   └── lib.rs                   # 托盘图标、轮询、闪烁和钩子注册
 │   ├── icons/status/                # 状态指示灯图标（灰、绿、黄、红、蓝）
 │   └── tauri.conf.json              # Tauri 配置
 ├── src/                             # 前端（无可见窗口，仅占位）
@@ -186,8 +173,7 @@ code-light/
 
 - **后端：** [Tauri v2](https://v2.tauri.app/) + Rust
 - **前端：** Vite + TypeScript（最小化 —— 应用没有可见窗口）
-- **钩子：** Bash 脚本，注册为生命周期钩子
-- **桌面宠物：** 使用 Node.js canvas 生成像素艺术精灵图
+- **钩子：** Claude Shell 钩子 + Codex 原生桥接
 
 ## 许可证
 
