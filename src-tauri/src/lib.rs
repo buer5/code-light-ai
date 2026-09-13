@@ -129,6 +129,14 @@ fn startup_failure_message(
     (!errors.is_empty()).then(|| errors.join("; "))
 }
 
+fn startup_icon_refresh_delays() -> [Duration; 3] {
+    [
+        Duration::from_secs(1),
+        Duration::from_secs(5),
+        Duration::from_secs(15),
+    ]
+}
+
 fn sessions_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
@@ -760,6 +768,25 @@ pub fn run() {
                 .build(app)?;
             app.manage(tray);
 
+            // Explorer can finish building the notification area after a Run-key app starts.
+            // Re-applying the current icon makes the tray registration resilient to that race.
+            let refresh_app = app.handle().clone();
+            let refresh_icons = icons.clone();
+            let refresh_state = app_state.clone();
+            std::thread::spawn(move || {
+                for delay in startup_icon_refresh_delays() {
+                    std::thread::sleep(delay);
+                    let key = {
+                        let state = refresh_state.lock().unwrap();
+                        state.state.key().to_string()
+                    };
+                    let icon = refresh_icons.lock().unwrap().get(&key).unwrap().clone();
+                    if let Some(tray) = refresh_app.tray_by_id("main") {
+                        let _ = tray.set_icon(Some(icon));
+                    }
+                }
+            });
+
             // Poll thread
             let poll_app = app.handle().clone();
             let poll_state = app_state.clone();
@@ -860,10 +887,11 @@ pub fn run() {
 mod tests {
     use super::{
         codex_hook_state, enable_hooks_feature, merge_scanned_codex_sessions,
-        parse_codex_hooks_config, startup_failure_message, write_codex_session, SessionSnapshot,
-        State,
+        parse_codex_hooks_config, startup_failure_message, startup_icon_refresh_delays,
+        write_codex_session, SessionSnapshot, State,
     };
     use crate::codex_sessions::{CodexSession, SessionState};
+    use std::time::Duration;
 
     fn hook_session(id: &str, agent: &str, state: State) -> SessionSnapshot {
         SessionSnapshot {
@@ -965,6 +993,18 @@ mod tests {
         assert_eq!(
             startup_failure_message(Some("registry access denied"), None),
             Some("autostart setup failed: registry access denied".to_string())
+        );
+    }
+
+    #[test]
+    fn startup_icon_refreshes_cover_explorer_initialization_window() {
+        assert_eq!(
+            startup_icon_refresh_delays(),
+            [
+                Duration::from_secs(1),
+                Duration::from_secs(5),
+                Duration::from_secs(15)
+            ]
         );
     }
 }
