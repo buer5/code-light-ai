@@ -11,6 +11,7 @@ use tauri::{
     tray::TrayIconBuilder,
     Emitter, Manager,
 };
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 mod codex_sessions;
 
@@ -111,6 +112,21 @@ struct AppState {
     blink_on: bool,
     completed_since: Option<u64>,
     setup_error: Option<String>,
+    autostart_error: Option<String>,
+}
+
+fn startup_failure_message(
+    autostart_error: Option<&str>,
+    codex_setup_error: Option<&str>,
+) -> Option<String> {
+    let mut errors = Vec::new();
+    if let Some(error) = autostart_error {
+        errors.push(format!("autostart setup failed: {error}"));
+    }
+    if let Some(error) = codex_setup_error {
+        errors.push(format!("Codex setup failed: {error}"));
+    }
+    (!errors.is_empty()).then(|| errors.join("; "))
 }
 
 fn sessions_dir() -> PathBuf {
@@ -647,9 +663,14 @@ pub fn run() {
         blink_on: true,
         completed_since: None,
         setup_error: None,
+        autostart_error: None,
     }));
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None::<Vec<&str>>,
+        ))
         .plugin(tauri_plugin_opener::init())
         .manage(app_state.clone())
         .invoke_handler(tauri::generate_handler![get_current_state])
@@ -671,23 +692,24 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
-            app.handle().plugin(tauri_plugin_autostart::init(
-                MacosLauncher::LaunchAgent,
-                None::<Vec<&str>>,
-            ))?;
             let autostart_error = app
                 .autolaunch()
                 .enable()
                 .err()
                 .map(|error| error.to_string());
             let codex_setup_error = setup_codex_hooks().err();
-            let startup_tooltip = match (autostart_error.is_some(), codex_setup_error.is_some()) {
-                (true, true) => "code-light: autostart and Codex setup failed".to_string(),
-                (true, false) => "code-light: autostart setup failed".to_string(),
-                (false, true) => "code-light: Codex hook setup failed".to_string(),
-                (false, false) => "code-light: Idle".to_string(),
-            };
+            let startup_failure =
+                startup_failure_message(autostart_error.as_deref(), codex_setup_error.as_deref());
+            let startup_tooltip = startup_failure
+                .as_deref()
+                .map(|error| format!("code-light: {error}"))
+                .unwrap_or_else(|| "code-light: Idle".to_string());
+            if let Some(error) = autostart_error {
+                let mut state = app_state.lock().unwrap();
+                state.state = State::Error;
+                state.message = error.clone();
+                state.autostart_error = Some(error);
+            }
             if let Some(error) = codex_setup_error {
                 let mut state = app_state.lock().unwrap();
                 state.state = State::Error;
@@ -746,7 +768,9 @@ pub fn run() {
                 let (state, message, ts, count) = read_all_sessions();
                 let mut s = poll_state.lock().unwrap();
 
-                if let Some(error) = s.setup_error.as_ref() {
+                if let Some(error) =
+                    startup_failure_message(s.autostart_error.as_deref(), s.setup_error.as_deref())
+                {
                     if let Some(tray) = poll_app.tray_by_id("main") {
                         let text: String = format!("code-light setup failed: {error}")
                             .chars()
@@ -836,7 +860,8 @@ pub fn run() {
 mod tests {
     use super::{
         codex_hook_state, enable_hooks_feature, merge_scanned_codex_sessions,
-        parse_codex_hooks_config, write_codex_session, SessionSnapshot, State,
+        parse_codex_hooks_config, startup_failure_message, write_codex_session, SessionSnapshot,
+        State,
     };
     use crate::codex_sessions::{CodexSession, SessionState};
 
@@ -933,6 +958,14 @@ mod tests {
 
         assert!(enabled.contains("[features] # existing\r\nhooks = true\r\nfoo = true"));
         assert!(enabled.contains("[mcp]\r\nbar = true"));
+    }
+
+    #[test]
+    fn startup_failure_message_keeps_autostart_failure_visible() {
+        assert_eq!(
+            startup_failure_message(Some("registry access denied"), None),
+            Some("autostart setup failed: registry access denied".to_string())
+        );
     }
 }
 
